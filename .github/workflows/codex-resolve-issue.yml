@@ -42,10 +42,11 @@ jobs:
         with:
           node-version: "20"
           cache: npm
-          cache-dependency-path: package-lock.json
+          cache-dependency-path: 03-github-issue-npm-dependency/package-lock.json
 
       - name: npm ci
         run: npm ci
+        working-directory: 03-github-issue-npm-dependency
 
       - name: Git-Identität für Automation-Commits
         run: |
