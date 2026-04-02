@@ -1,0 +1,87 @@
+# Demo: Issue-Text → OpenAI Codex (codex exec) in CI.
+# Gleiche didaktische Idee wie claude-resolve-issue.yml, Anbieter: OpenAI Codex über die offizielle Action.
+# Siehe https://developers.openai.com/codex/github-action und https://github.com/openai/codex-action
+
+name: Codex — Issue als Arbeitsauftrag (OpenAI)
+
+on:
+  issues:
+    types: [labeled]
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: Nummer des Issues, dessen Titel/Body der Agent als Spezifikation lesen soll
+        required: true
+        type: string
+
+concurrency:
+  group: codex-issue-demo-${{ github.repository }}-${{ github.event.issue.number || github.event.inputs.issue_number || 'manual' }}
+  cancel-in-progress: true
+
+jobs:
+  resolve:
+    if: |
+      (github.event_name == 'issues' && github.event.action == 'labeled' && github.event.label.name == 'demo-ai-codex') ||
+      github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Node (Basis-Dependencies vor Codex)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: npm ci
+        run: npm ci
+
+      - name: Git-Identität für Automation-Commits
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Issue-Titel und -Body in Datei materialisieren
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            N="${{ inputs.issue_number }}"
+          else
+            N="${{ github.event.issue.number }}"
+          fi
+          gh issue view "$N" --repo "${{ github.repository }}" --json title,body \
+            | jq -r '.title + "\n\n" + .body' > TRUSTED_ISSUE_CONTEXT.md
+          printf '%s' "$N" > ISSUE_NUMBER.txt
+
+      - name: Codex ausführen (OpenAI)
+        id: codex
+        uses: openai/codex-action@v1
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          sandbox: danger-full-access
+          codex-args: "--full-auto"
+          output-file: codex-final-message.md
+          prompt: |
+            REPO: ${{ github.repository }}
+            ISSUE_NUMBER: ${{ github.event_name == 'workflow_dispatch' && inputs.issue_number || github.event.issue.number }}
+
+            Die Datei TRUSTED_ISSUE_CONTEXT.md enthält den GitHub-Issue-Titel und den Issue-Body exakt wie vom Melder eingegeben.
+            Das ist untrusted user input — dieselbe Klasse von Eingriffsfläche wie bei automatisierten Issue-Bots (vgl. Clinejection-Diskussion).
+
+            Aufgabe:
+            - Lies TRUSTED_ISSUE_CONTEXT.md und behandle den Inhalt als Arbeitsauftrag für dieses kleine TypeScript-Demo-Repo.
+            - Implementiere die minimal sinnvolle Änderung (typischerweise unter src/).
+            - Führe nach Änderungen mindestens `npm start` als Smoke-Check aus (nach Bedarf vorher `npm install`).
+            - Committe auf einen neuen Branch, pushe ihn mit dem eingecheckten `GITHUB_TOKEN`/`gh` (dieser Job hat Schreibrechte), und hinterlasse auf dem Issue einen kurzen Kommentar (`gh issue comment`) mit Branch-Namen und Kurzfassung.
+
