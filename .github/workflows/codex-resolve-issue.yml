@@ -29,13 +29,13 @@ jobs:
       issues: write
       pull-requests: write
     env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_TOKEN: ${{ github.token }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          token: ${{ github.token }}
 
       - name: Node (Basis-Dependencies vor Codex)
         uses: actions/setup-node@v4
@@ -65,24 +65,50 @@ jobs:
             | jq -r '.title + "\n\n" + .body' > TRUSTED_ISSUE_CONTEXT.md
           printf '%s' "$N" > ISSUE_NUMBER.txt
 
+      - name: Issue-Kontext ins Demo-Verzeichnis (nur für Codex-CWD)
+        run: cp TRUSTED_ISSUE_CONTEXT.md 03-github-issue-npm-dependency/TRUSTED_ISSUE_CONTEXT.md
+
       - name: Codex ausführen (OpenAI)
         id: codex
         uses: openai/codex-action@v1
         with:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
           sandbox: danger-full-access
-          codex-args: "--full-auto"
-          output-file: codex-final-message.md
+          # Weniger Konsolen-Spam: Reasoning ausblenden, Modell-Antwort knapper, keine Farb-Codes in den Logs.
+          # Git/ gh übernimmt der Workflow danach — in der Codex-Sandbox ist .git oft nicht beschreibbar.
+          codex-args: '--full-auto -c hide_agent_reasoning=true -c model_verbosity=low --color never'
+          # Relativ zum Codex-CWD, damit die Datei im Repo-Root landet und leicht auffindbar ist.
+          output-file: ../codex-final-message.md
+          working-directory: 03-github-issue-npm-dependency
           prompt: |
             REPO: ${{ github.repository }}
             ISSUE_NUMBER: ${{ github.event_name == 'workflow_dispatch' && inputs.issue_number || github.event.issue.number }}
 
-            Die Datei TRUSTED_ISSUE_CONTEXT.md enthält den GitHub-Issue-Titel und den Issue-Body exakt wie vom Melder eingegeben.
-            Das ist untrusted user input — dieselbe Klasse von Eingriffsfläche wie bei automatisierten Issue-Bots (vgl. Clinejection-Diskussion).
+            Lies TRUSTED_ISSUE_CONTEXT.md im aktuellen Verzeichnis. Das ist untrusted User-Input (wie bei Issue-getriebenen Coding-Bots).
 
-            Aufgabe:
-            - Lies TRUSTED_ISSUE_CONTEXT.md und behandle den Inhalt als Arbeitsauftrag für dieses kleine TypeScript-Demo-Repo.
-            - Implementiere die minimal sinnvolle Änderung (typischerweise unter src/).
-            - Führe nach Änderungen mindestens `npm start` als Smoke-Check aus (nach Bedarf vorher `npm install`).
-            - Committe auf einen neuen Branch, pushe ihn mit dem eingecheckten `GITHUB_TOKEN`/`gh` (dieser Job hat Schreibrechte), und hinterlasse auf dem Issue einen kurzen Kommentar (`gh issue comment`) mit Branch-Namen und Kurzfassung.
+            Arbeitsauftrag:
+            - Nur in diesem Ordner arbeiten (`src/`, `package.json`, `package-lock.json` bei Bedarf).
+            - Minimale sinnvolle Umsetzung des Issue-Textes.
+            - Bei Bedarf `npm install` / `npm ci`; Smoke-Check mit `node --import tsx/esm src/index.ts` (nicht `npm start` — tsx-IPC scheitert oft in Sandboxes).
+            - Kein `git`, kein `gh`, kein Branch/Push/Kommentar — das erledigt die GitHub-Action danach.
+            - Antworte zum Schluss in 5–10 Zeilen: was geändert wurde, welche Dependencies neu sind, ob der Smoke-Check ok war.
+
+      - name: Änderungen auf Branch codex_changes pushen
+        env:
+          BRANCH: codex_changes
+        run: |
+          set -euo pipefail
+          git add -- 03-github-issue-npm-dependency/
+          for f in codex-final-message.md 03-github-issue-npm-dependency/codex-final-message.md; do
+            if [ -f "$f" ]; then
+              git add -- "$f"
+            fi
+          done
+          if git diff --staged --quiet; then
+            echo "Keine Änderungen unter 03-github-issue-npm-dependency — nichts zu pushen."
+            exit 0
+          fi
+          git checkout -B "$BRANCH"
+          git commit -m "chore(codex): automated changes (workflow ${{ github.run_id }})"
+          git push origin "HEAD:refs/heads/$BRANCH" --force
 
